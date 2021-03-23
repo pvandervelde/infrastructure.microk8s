@@ -1,74 +1,221 @@
 [CmdletBinding()]
 param()
 
+$ErrorActionPreference = 'Stop'
+
+# ------------------------------ Functions -------------------------------------
+
+function Get-LoadBalancerIPRange
+{
+    [CmdletBinding()]
+    param()
+
+    $multipassVmInfo = & multipass list --format json | ConvertFrom-Json
+
+    $microk8sVmInfo = $multipassVmInfo.list | Where-Object { $_.name -eq 'microk8s-vm' }
+    $nodeIPAddresses = $microk8sVmInfo.ipv4
+    $nodeIPAddress = $nodeIPAddresses | Where-Object { $_.StartsWith('172') }
+
+    $octets = $nodeIPAddress -split "\."
+    $octets[3] = '240'
+
+    $range = ($octets -join ".")  + '/28'
+    return $range
+}
+
+function Install-Dashboard
+{
+    [CmdletBinding()]
+    param()
+
+    Write-Output "Install dashboard ..."
+    & kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.2.0/aio/deploy/recommended.yaml
+
+    # Connect to the dashboard via ingress
+    # Write-Output "Add an ingress for the k8s dashboard ..."
+    # & kubectl apply -f ./dashboard/ingress.yaml
+
+    Write-Output "Add a load balancer for the k8s dashboard ..."
+    & kubectl apply -f ./dashboard/loadbalancer.yaml
+
+    Write-Output "Assign admin rights to the dashboard user ..."
+    & kubectl apply -f ./dashboard/dashboard-admin.yaml
+
+    Write-Output "Store dashboard token ..."
+    $dashboardSecret = & kubectl -n kubernetes-dashboard get secret |
+        Select-String dashboard-admin |
+        ForEach-Object { $_ -Split '\s+' } |
+        Select-Object -First 1
+    $dashboardToken = & kubectl -n kubernetes-dashboard describe secret $dashboardSecret
+
+    Write-Output $dashboardToken
+}
+
+function Install-Ingress
+{
+    [CmdletBinding()]
+    param()
+
+    # link longhorn to Traefik (see: https://forums.rancher.com/t/longhorn-ui-with-traefik/16742/2)
+    # Write-Output "Attach Longhorn to Traefik ..."
+    # & kubectl delete service longhorn-frontend -n longhorn-system
+    # & kubectl apply -f ./longhorn/longhorn-service.yaml
+    # & kubectl apply -f ./longhorn/longhorn-ingress.yaml
+}
+
+function Install-Loadbalancer
+{
+    [CmdletBinding()]
+    param(
+        [string] $tempDir
+    )
+
+    $metallbVersion = '0.9.5'
+
+    # metallb
+    Write-Output "Set the MetalLB namespace ..."
+    kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v$metallbVersion/manifests/namespace.yaml"
+
+    Write-Output "Set the MetalLB items ..."
+    kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v$metallbVersion/manifests/metallb.yaml"
+
+    # On first install only
+    $createMetallbSecret = $false
+    try
+    {
+        $output = & kubectl get secret --namespace metallb-system --output json | ConvertFrom-Json
+        $memberList = $output.items | Where-Object { $_.metadata.name -eq 'memberlist' }
+        $createMetallbSecret = ($null -eq $memberList)
+
+        Write-Output "Not setting the MetalLB memberlist secret. It already exists."
+    }
+    catch
+    {
+        # The secret does not exist
+        $createMetallbSecret = $true
+    }
+
+    if ($createMetallbSecret)
+    {
+        Write-Output "Setting the MetalLB memberlist secret ..."
+        kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+    }
+
+    $ipRange = Get-LoadBalancerIPRange
+
+
+    $configPath = Join-Path $tempDir 'config.yaml'
+@"
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    address-pools:
+    - name: cluster-pool
+      protocol: layer2
+      addresses:
+      - $ipRange
+"@ | Out-File -FilePath $configPath
+
+    Write-Output "Setting the MetalLB IP range to $ipRange ..."
+    kubectl apply -f $configPath
+}
+
+function Set-Authentication
+{
+    [CmdletBinding()]
+    param()
+
+    Write-Output "Enable RBAC ..."
+    & microk8s enable rbac
+}
+
+function Set-Dns
+{
+    [CmdletBinding()]
+    param()
+
+    Write-Output "Enable CoreDNS ..."
+    & microk8s enable dns
+}
+
+function Set-KubeConfig
+{
+    [CmdletBinding()]
+    param()
+
+    Write-Output "Updating ~/.kube/config to have the microk8s config ..."
+    & microk8s config > ~/.kube/config
+}
+
+function Set-Storage
+{
+    [CmdletBinding()]
+    param()
+
+    # storage
+    # Write-Output "Enable storage ..."
+    # & microk8s enable storage
+
+    # Add longhorn for storage
+    # Write-Output "Install Longhorn using Helm 3..."
+    # & helm repo add longhorn https://charts.longhorn.ios
+    # & helm repo update
+    # & kubectl create namespace longhorn-system
+    # & helm install longhorn longhorn/longhorn --namespace longhorn-system
+}
+
+function Set-TempDir
+{
+    [CmdletBinding()]
+    param()
+
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) 'tmp'
+    if (-not (Test-Path $path))
+    {
+        New-Item -Path $path -ItemType Directory | Out-Null
+    }
+
+    return $path
+}
+
+# ------------------------------ Functions -------------------------------------
+
+# Verify that microk8s is installed
+$command = Get-Command microk8s -ErrorAction SilentlyContinue
+if ($null -eq $command)
+{
+    throw "MicroK8s is not on the PATH. Please add MicroK8s to the PATH before continueing."
+}
+
+$tempDir = Set-TempDir
+
 # Make sure the normal kubectl has the same config as microk8s config
-Write-Output "Updating .kube/config to have the microk8s config ..."
-& microk8s config > ~/.kube/config
+Set-KubeConfig
 
 # enable features
 Write-Output "Enabling features ..."
-Write-Output "Enable RBAC ..."
-& microk8s enable rbac
 
-Write-Output "Enable CoreDNS ..."
-& microk8s enable dns
+Set-Authentication
 
-Write-Output "Enable dashboard ..."
-& microk8s enable dashboard
+Set-Dns
 
-Write-Output "Store dashboard token ..."
-& kubectl apply -f ./dashboard/create-user.yaml
-& kubectl -n kubernetes-dashboard describe secret $(kubectl -n kubernetes-dashboard get secret | sls admin-user | ForEach-Object { $_ -Split '\s+' } | Select -First 1)
+Install-Loadbalancer -tempDir $tempDir
 
-Write-Output "Enable Helm3 ..."
-& microk8s enable helm3
-
-# storage
-Write-Output "Enable storage ..."
-& microk8s enable storage
+Set-Storage
 
 # registry
-Write-Output "Enable registry ..."
-& microk8s enable registry
+# Write-Output "Enable registry ..."
+# & microk8s enable registry
 
-# metallb
-Write-Output "Enable metallb on range 172.17.35.0/24 ..."
-& microk8s enable metallb 172.17.35.0/24
+Install-Ingress
 
-# Add Traefik
-Write-Output "Install Traefik using Helm 3..."
-& helm repo add traefik https://helm.traefik.io/traefik
-& helm repo update
+Install-Dashboard
 
-# It looks like 9.12.1 introduced an issue that results in the following error message
-#   Error: failed to install CRD crds/ingressroute.yaml: CustomResourceDefinition.apiextensions.k8s.io
-#     "ingressroutes.traefik.containo.us" is invalid: [spec.versions: Invalid value:
-#     []apiextensions.CustomResourceDefinitionVersion(nil): must have exactly one version marked as
-#     storage version, status.storedVersions: Invalid value: []string(nil): must have at least one
-#     stored version]
-& helm install `
-  -f ./traefik/config.yaml `
-  traefik `
-  traefik/traefik `
-  --version 9.12.0 `
-  --set service.type=NodePort
 
-# Connect to the dashboard via ingress
-Write-Output "Add an ingress for the k8s dashboard ..."
-& kubectl apply -f ./dashboard/ingress.yaml
-
-# Add longhorn for storage
-# Write-Output "Install Longhorn using Helm 3..."
-# & helm repo add longhorn https://charts.longhorn.ios
-# & helm repo update
-# & kubectl create namespace longhorn-system
-# & helm install longhorn longhorn/longhorn --namespace longhorn-system
-
-# link longhorn to Traefik (see: https://forums.rancher.com/t/longhorn-ui-with-traefik/16742/2)
-# Write-Output "Attach Longhorn to Traefik ..."
-# & kubectl delete service longhorn-frontend -n longhorn-system
-# & kubectl apply -f ./longhorn/longhorn-service.yaml
-# & kubectl apply -f ./longhorn/longhorn-ingress.yaml
 
 # Add harbor
 # Write-Output "Install Harbor using Helm 3"
