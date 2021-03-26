@@ -56,6 +56,10 @@ function Install-Ingress
     [CmdletBinding()]
     param()
 
+    Write-Output "Install Traefik ..."
+    & kubectl apply -f ./traefik/custom-resource.yaml
+    & kubectl apply -k ./traefik/base
+
     # link longhorn to Traefik (see: https://forums.rancher.com/t/longhorn-ui-with-traefik/16742/2)
     # Write-Output "Attach Longhorn to Traefik ..."
     # & kubectl delete service longhorn-frontend -n longhorn-system
