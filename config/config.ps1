@@ -160,16 +160,16 @@ function Set-Storage
     [CmdletBinding()]
     param()
 
-    # storage
-    # Write-Output "Enable storage ..."
-    # & microk8s enable storage
+    Write-Output "Install Longhorn..."
+    & kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.1.0/deploy/longhorn.yaml
 
-    # Add longhorn for storage
-    # Write-Output "Install Longhorn using Helm 3..."
-    # & helm repo add longhorn https://charts.longhorn.ios
-    # & helm repo update
-    # & kubectl create namespace longhorn-system
-    # & helm install longhorn longhorn/longhorn --namespace longhorn-system
+    # Set the replica count for Longhorn to 1 because we only have one node
+    & kubectl delete storageclass longhorn
+    & kubectl apply -f ./longhorn/configmap-storageclass.yaml
+
+    #& kubectl delete service longhorn-frontend -n longhorn-system
+    #& kubectl apply -f ./longhorn/service.yaml
+    & kubectl apply -f ./longhorn/ingress.yaml
 }
 
 function Set-TempDir

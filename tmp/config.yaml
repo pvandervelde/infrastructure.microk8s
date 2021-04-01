@@ -9,4 +9,4 @@ data:
     - name: cluster-pool
       protocol: layer2
       addresses:
-      - 172.19.8.240/28
+      - 172.22.115.240/28
