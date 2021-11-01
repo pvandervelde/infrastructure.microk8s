@@ -10,9 +10,10 @@ metadata:
     traefik.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   rules:
-    - http:
+    - host: "dashboard.k8s.dev.calvinverse.net"
+      http:
         paths:
-          - path: /kubedash
+          - path: /
             pathType: Prefix
             backend:
               serviceName: kubernetes-dashboard

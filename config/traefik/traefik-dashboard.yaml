@@ -21,7 +21,7 @@ metadata:
     kubernetes.io/ingress.class: traefik
 spec:
   rules:
-  - host: traefik-ui.microk8s-vm.mshome.net
+  - host: ingress.k8s.dev.calvinverse.net
     http:
       paths:
       - backend:

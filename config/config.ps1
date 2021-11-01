@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------ Functions -------------------------------------
 
-function Get-LoadBalancerIPRange
+function Get-LoadBalancerIPRanges
 {
     [CmdletBinding()]
     param()
@@ -14,19 +14,33 @@ function Get-LoadBalancerIPRange
 
     $microk8sVmInfo = $multipassVmInfo.list | Where-Object { $_.name -eq 'microk8s-vm' }
     $nodeIPAddresses = $microk8sVmInfo.ipv4
+
+    # Grab the internal IP address which starts with 172.x.y.z
     $nodeIPAddress = $nodeIPAddresses | Where-Object { $_.StartsWith('172') }
 
     $octets = $nodeIPAddress -split "\."
     $octets[3] = '240'
 
-    $range = ($octets -join ".")  + '/28'
-    return $range
+    $internalRange = ($octets -join ".")  + '/28'
+
+    # Grab the 'external' IP address which stars with 192.168.x.y
+    $nodeIPAddress = $nodeIPAddresses | Where-Object { $_.StartsWith('192.168') }
+
+    $octets = $nodeIPAddress -split "\."
+    $octets[3] = '240'
+
+    $externalRange = ($octets -join ".")  + '/28'
+
+
+    return @($internalRange, $externalRange)
 }
 
 function Install-Dashboard
 {
     [CmdletBinding()]
     param()
+
+    Set-LogSection
 
     Write-Output "Install dashboard ..."
     & kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.2.0/aio/deploy/recommended.yaml
@@ -56,6 +70,8 @@ function Install-Ingress
     [CmdletBinding()]
     param()
 
+    Set-LogSection
+
     Write-Output "Install Traefik ..."
     & kubectl apply -f ./traefik/custom-resource.yaml
     & kubectl apply -k ./traefik/base
@@ -75,6 +91,8 @@ function Install-Loadbalancer
     )
 
     $metallbVersion = '0.9.5'
+
+    Set-LogSection
 
     # metallb
     Write-Output "Set the MetalLB namespace ..."
@@ -105,7 +123,7 @@ function Install-Loadbalancer
         kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
     }
 
-    $ipRange = Get-LoadBalancerIPRange
+    $ipRanges = Get-LoadBalancerIPRanges
 
 
     $configPath = Join-Path $tempDir 'config.yaml'
@@ -121,10 +139,11 @@ data:
     - name: cluster-pool
       protocol: layer2
       addresses:
-      - $ipRange
+      - $($ipRanges[0])
+      - $($ipRanges[1])
 "@ | Out-File -FilePath $configPath
 
-    Write-Output "Setting the MetalLB IP range to $ipRange ..."
+    Write-Output "Setting the MetalLB IP range to $($ipRanges[0]) and $($ipRanges[1]) ..."
     kubectl apply -f $configPath
 }
 
@@ -132,6 +151,8 @@ function Set-Authentication
 {
     [CmdletBinding()]
     param()
+
+    Set-LogSection
 
     Write-Output "Enable RBAC ..."
     & microk8s enable rbac
@@ -142,6 +163,8 @@ function Set-Dns
     [CmdletBinding()]
     param()
 
+    Set-LogSection
+
     Write-Output "Enable CoreDNS ..."
     & microk8s enable dns
 }
@@ -151,14 +174,29 @@ function Set-KubeConfig
     [CmdletBinding()]
     param()
 
+    Set-LogSection
+
     Write-Output "Updating ~/.kube/config to have the microk8s config ..."
     & microk8s config > ~/.kube/config
+}
+
+function Set-LogSection
+{
+    [CmdletBinding()]
+    param()
+
+    Write-Output ""
+    Write-Output "--"
+    Write-Output ""
+
 }
 
 function Set-Storage
 {
     [CmdletBinding()]
     param()
+
+    Set-LogSection
 
     Write-Output "Install Longhorn..."
     & kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.1.0/deploy/longhorn.yaml
